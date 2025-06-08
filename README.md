@@ -1,9 +1,22 @@
 # ferrum_cloud
+
 Pure Rust implementation of Point Cloud Library (PCL).
 
+This library provides efficient, safe, and ergonomic APIs for point cloud processing,
+leveraging Rust's ownership system, zero-cost abstractions, and parallel processing capabilities.
+
+# Features
+
+- **Memory Safety**: Leverages Rust's ownership system for safe memory management
+- **Zero-Copy Operations**: Efficient processing through views and references
+- **Parallel Processing**: Built-in support for parallel operations using Rayon
+- **Generic Point Types**: Flexible point type system supporting various point formats
+- **Comprehensive I/O**: Support for multiple point cloud file formats
+
 # Quick Start
+
 ```rust
-use ferrumcloud::prelude::*;
+use ferrum_cloud::prelude::*;
 
 fn main() -> Result<()> {
     // Load a point cloud
