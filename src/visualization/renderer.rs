@@ -242,17 +242,7 @@ impl PointCloudRenderer {
                 unclipped_depth: false,
                 conservative: false,
             },
-            depth_stencil: if render_config.depth_test {
-                Some(wgpu::DepthStencilState {
-                    format: wgpu::TextureFormat::Depth32Float,
-                    depth_write_enabled: true,
-                    depth_compare: wgpu::CompareFunction::Less,
-                    stencil: wgpu::StencilState::default(),
-                    bias: wgpu::DepthBiasState::default(),
-                })
-            } else {
-                None
-            },
+            depth_stencil: None, // Disable depth testing for now
             multisample: wgpu::MultisampleState {
                 count: 1,
                 mask: !0,
