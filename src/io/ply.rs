@@ -2,113 +2,140 @@
 //!
 //! This module provides functionality for reading and writing PLY files,
 //! a popular format for storing 3D polygon data.
+//!
+//! Uses the `ply-rs` crate for efficient and robust PLY file handling.
 
 use crate::core::{Point, PointCloud, PointXYZ};
 use crate::error::{CloudError, Result};
+use ply_rs::parser::Parser;
+use ply_rs::ply::{
+    DefaultElement, ElementDef, Encoding, Ply, PropertyDef, PropertyType, ScalarType,
+};
+use ply_rs::writer::Writer;
 use std::fs::File;
-use std::io::{BufRead, BufReader, BufWriter, Write};
+use std::io::{BufReader, BufWriter};
 use std::path::Path;
 
 /// Load a point cloud from a PLY file
+///
+/// # Arguments
+/// * `path` - Path to the PLY file
+///
+/// # Returns
+/// A Result containing the loaded PointCloud or an error
 pub fn load_ply<P: AsRef<Path>>(path: P) -> Result<PointCloud<PointXYZ>> {
-    let file = File::open(path)?;
-    let reader = BufReader::new(file);
-    parse_ply(reader)
-}
+    let file = File::open(path.as_ref())?;
 
-/// Save a point cloud to a PLY file
-pub fn save_ply<P: Point, Q: AsRef<Path>>(cloud: &PointCloud<P>, path: Q) -> Result<()> {
-    let file = File::create(path)?;
-    let writer = BufWriter::new(file);
-    write_ply(cloud, writer)
-}
+    let mut reader = BufReader::new(file);
 
-/// Parse PLY data from a reader
-fn parse_ply<R: BufRead>(reader: R) -> Result<PointCloud<PointXYZ>> {
-    let mut lines = reader.lines();
+    // Create parser for DefaultElement
+    let parser = Parser::<DefaultElement>::new();
+
+    // Parse the PLY file
+    let ply = parser
+        .read_ply(&mut reader)
+        .map_err(|e| CloudError::format_error(format!("Failed to parse PLY file: {}", e)))?;
+
+    // Extract vertex data
+    let vertices = ply
+        .payload
+        .get("vertex")
+        .ok_or_else(|| CloudError::format_error("PLY file does not contain vertex data"))?;
+
     let mut points = Vec::new();
-    let mut vertex_count = 0usize;
-    let mut in_header = true;
+    points.reserve(vertices.len());
 
-    // Parse header
-    while let Some(line) = lines.next() {
-        let line = line?;
-        let line = line.trim();
+    for vertex in vertices {
+        let x = extract_coordinate(vertex, "x")?;
+        let y = extract_coordinate(vertex, "y")?;
+        let z = extract_coordinate(vertex, "z")?;
 
-        if line.starts_with("ply") {
-            continue;
-        } else if line.starts_with("format") {
-            // Check format - we only support ASCII for now
-            if !line.contains("ascii") {
-                return Err(CloudError::format_error(
-                    "Only ASCII PLY format is supported",
-                ));
-            }
-        } else if line.starts_with("element vertex") {
-            let parts: Vec<&str> = line.split_whitespace().collect();
-            if parts.len() >= 3 {
-                vertex_count = parts[2]
-                    .parse()
-                    .map_err(|_| CloudError::format_error("Invalid vertex count"))?;
-            }
-        } else if line.starts_with("property") {
-            // Property definitions - we expect x, y, z
-            continue;
-        } else if line.starts_with("end_header") {
-            in_header = false;
-            break;
-        }
-    }
-
-    if in_header {
-        return Err(CloudError::format_error("No end_header found"));
-    }
-
-    // Parse vertex data
-    points.reserve(vertex_count);
-    for line in lines.take(vertex_count) {
-        let line = line?;
-        let line = line.trim();
-
-        if line.is_empty() {
-            continue;
-        }
-
-        let coords: Vec<&str> = line.split_whitespace().collect();
-        if coords.len() >= 3 {
-            let x: f32 = coords[0]
-                .parse()
-                .map_err(|_| CloudError::format_error("Invalid x coordinate"))?;
-            let y: f32 = coords[1]
-                .parse()
-                .map_err(|_| CloudError::format_error("Invalid y coordinate"))?;
-            let z: f32 = coords[2]
-                .parse()
-                .map_err(|_| CloudError::format_error("Invalid z coordinate"))?;
-
-            points.push(PointXYZ::new(x, y, z));
-        }
+        points.push(PointXYZ::new(x, y, z));
     }
 
     Ok(PointCloud::from_points(points))
 }
 
-/// Write PLY data to a writer
-fn write_ply<P: Point, W: Write>(cloud: &PointCloud<P>, mut writer: W) -> Result<()> {
-    // Write header
-    writeln!(writer, "ply")?;
-    writeln!(writer, "format ascii 1.0")?;
-    writeln!(writer, "element vertex {}", cloud.len())?;
-    writeln!(writer, "property float x")?;
-    writeln!(writer, "property float y")?;
-    writeln!(writer, "property float z")?;
-    writeln!(writer, "end_header")?;
+/// Extract coordinate value from a DefaultElement
+fn extract_coordinate(element: &DefaultElement, coord_name: &str) -> Result<f32> {
+    element
+        .get(coord_name)
+        .and_then(|prop| match prop {
+            ply_rs::ply::Property::Float(f) => Some(*f),
+            ply_rs::ply::Property::Double(d) => Some(*d as f32),
+            ply_rs::ply::Property::Int(i) => Some(*i as f32),
+            ply_rs::ply::Property::UInt(u) => Some(*u as f32),
+            ply_rs::ply::Property::Short(s) => Some(*s as f32),
+            ply_rs::ply::Property::UShort(us) => Some(*us as f32),
+            ply_rs::ply::Property::Char(c) => Some(*c as f32),
+            ply_rs::ply::Property::UChar(uc) => Some(*uc as f32),
+            _ => None,
+        })
+        .ok_or_else(|| {
+            CloudError::format_error(format!("Missing or invalid {} coordinate", coord_name))
+        })
+}
 
-    // Write vertex data
-    for point in cloud.iter() {
+/// Save a point cloud to a PLY file
+///
+/// # Arguments
+/// * `cloud` - The point cloud to save
+/// * `path` - Path where to save the PLY file
+///
+/// # Returns
+/// A Result indicating success or failure
+pub fn save_ply<P: Point, Q: AsRef<Path>>(cloud: &PointCloud<P>, path: Q) -> Result<()> {
+    let file = File::create(path.as_ref())?;
+
+    let mut writer = BufWriter::new(file);
+
+    // Create PLY structure
+    let mut ply = Ply::<DefaultElement>::new();
+    ply.header.encoding = Encoding::Ascii;
+    ply.header
+        .comments
+        .push("Generated by ferrum_cloud".to_string());
+
+    // Define vertex element
+    let mut vertex_element = ElementDef::new("vertex".to_string());
+    vertex_element.count = cloud.len();
+
+    // Add properties for x, y, z coordinates
+    vertex_element.properties.insert(
+        "x".to_string(),
+        PropertyDef::new("x".to_string(), PropertyType::Scalar(ScalarType::Float)),
+    );
+    vertex_element.properties.insert(
+        "y".to_string(),
+        PropertyDef::new("y".to_string(), PropertyType::Scalar(ScalarType::Float)),
+    );
+    vertex_element.properties.insert(
+        "z".to_string(),
+        PropertyDef::new("z".to_string(), PropertyType::Scalar(ScalarType::Float)),
+    );
+
+    ply.header
+        .elements
+        .insert("vertex".to_string(), vertex_element);
+
+    // Create vertex data
+    let mut vertices = Vec::new();
+    for point in cloud.points() {
         let pos = point.position();
-        writeln!(writer, "{} {} {}", pos[0], pos[1], pos[2])?;
+        let mut vertex = DefaultElement::new();
+        vertex.insert("x".to_string(), ply_rs::ply::Property::Float(pos[0]));
+        vertex.insert("y".to_string(), ply_rs::ply::Property::Float(pos[1]));
+        vertex.insert("z".to_string(), ply_rs::ply::Property::Float(pos[2]));
+        vertices.push(vertex);
     }
+
+    ply.payload.insert("vertex".to_string(), vertices);
+
+    // Write PLY file
+    let ply_writer = Writer::new();
+    ply_writer
+        .write_ply(&mut writer, &mut ply)
+        .map_err(|e| CloudError::format_error(format!("Failed to write PLY file: {}", e)))?;
 
     Ok(())
 }
@@ -116,42 +143,36 @@ fn write_ply<P: Point, W: Write>(cloud: &PointCloud<P>, mut writer: W) -> Result
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Cursor;
+    use tempfile::NamedTempFile;
 
     #[test]
-    fn test_ply_parsing() {
-        let ply_data = r#"ply
-format ascii 1.0
-element vertex 3
-property float x
-property float y
-property float z
-end_header
-0.0 0.0 0.0
-1.0 1.0 1.0
-2.0 2.0 2.0
-"#;
+    fn test_ply_roundtrip() {
+        let points = vec![
+            PointXYZ::new(0.0, 0.0, 0.0),
+            PointXYZ::new(1.0, 1.0, 1.0),
+            PointXYZ::new(2.0, 2.0, 2.0),
+        ];
+        let original_cloud = PointCloud::from_points(points);
 
-        let cursor = Cursor::new(ply_data);
-        let cloud = parse_ply(cursor).unwrap();
+        let temp_file = NamedTempFile::new().unwrap();
+        let temp_path = temp_file.path();
 
-        assert_eq!(cloud.len(), 3);
-        assert_eq!(cloud.get(0).unwrap().position(), [0.0, 0.0, 0.0]);
-        assert_eq!(cloud.get(1).unwrap().position(), [1.0, 1.0, 1.0]);
-        assert_eq!(cloud.get(2).unwrap().position(), [2.0, 2.0, 2.0]);
-    }
+        // Save and load
+        save_ply(&original_cloud, temp_path).unwrap();
+        let loaded_cloud = load_ply(temp_path).unwrap();
 
-    #[test]
-    fn test_ply_writing() {
-        let points = vec![PointXYZ::new(0.0, 0.0, 0.0), PointXYZ::new(1.0, 1.0, 1.0)];
-        let cloud = PointCloud::from_points(points);
+        assert_eq!(original_cloud.len(), loaded_cloud.len());
 
-        let mut buffer = Vec::new();
-        write_ply(&cloud, &mut buffer).unwrap();
-
-        let output = String::from_utf8(buffer).unwrap();
-        assert!(output.contains("element vertex 2"));
-        assert!(output.contains("0 0 0"));
-        assert!(output.contains("1 1 1"));
+        for (original, loaded) in original_cloud
+            .points()
+            .iter()
+            .zip(loaded_cloud.points().iter())
+        {
+            let orig_pos = original.position();
+            let load_pos = loaded.position();
+            assert!((orig_pos[0] - load_pos[0]).abs() < 1e-6);
+            assert!((orig_pos[1] - load_pos[1]).abs() < 1e-6);
+            assert!((orig_pos[2] - load_pos[2]).abs() < 1e-6);
+        }
     }
 }

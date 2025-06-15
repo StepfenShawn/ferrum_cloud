@@ -12,6 +12,7 @@
 //! - **Parallel Processing**: Built-in support for parallel operations using Rayon
 //! - **Generic Point Types**: Flexible point type system supporting various point formats
 //! - **Comprehensive I/O**: Support for multiple point cloud file formats
+//! - **Real-time Visualization**: Hardware-accelerated 3D visualization (with `visualization` feature)
 //!
 //! ## Quick Start
 //!
@@ -20,17 +21,36 @@
 //!
 //! fn main() -> Result<()> {
 //!     // Load a point cloud
-//!     let cloud = io::load_pcd("scene.pcd")?;
+//!     let cloud = io::load_pcd("examples/scene.pcd")?;
 //!
 //!     // Process the cloud
 //!     let processed = cloud
 //!         .voxel_downsample(0.05)
-//!         .remove_outliers(50, 1.0)
-//!         .estimate_normals(0.5);
+//!         .remove_outliers(50, 1.0)?;
+//!         //.estimate_normals(0.5)?;
 //!
 //!     // Save the result
-//!     io::save_ply(&processed, "processed.ply")?;
+//!     io::save_ply(&processed, "examples/processed.ply")?;
 //!
+//!     Ok(())
+//! }
+//! ```
+//!
+//! ## Visualization
+//!
+//! With the `visualization` feature enabled:
+//!
+//! ```rust,no_run
+//! use ferrum_cloud::prelude::*;
+//!
+//! #[tokio::main]
+//! async fn main() -> Result<()> {
+//!     let cloud = io::load_pcd("examples/scene.pcd")?;
+//!     
+//!     let mut viewer = PointCloudViewer::new().await?;
+//!     viewer.add_point_cloud(&cloud, "scene")?;
+//!     viewer.run().await?;
+//!     
 //!     Ok(())
 //! }
 //! ```
@@ -42,8 +62,8 @@ pub mod io;
 pub mod search;
 pub mod utils;
 
-// #[cfg(feature = "visualization")]
-// pub mod visualization;
+#[cfg(feature = "visualization")]
+pub mod visualization;
 
 /// Prelude module for convenient imports
 pub mod prelude {
@@ -53,8 +73,8 @@ pub mod prelude {
     pub use crate::io;
     pub use crate::search::*;
 
-    // #[cfg(feature = "visualization")]
-    // pub use crate::visualization::*;
+    #[cfg(feature = "visualization")]
+    pub use crate::visualization::*;
 }
 
 // Re-export commonly used types

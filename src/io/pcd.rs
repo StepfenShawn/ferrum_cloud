@@ -2,11 +2,12 @@
 //!
 //! This module provides functionality for reading and writing PCD files,
 //! which is the native format of the Point Cloud Library (PCL).
+//!
+//! Uses the `pcd-rs` crate for efficient and robust PCD file handling.
 
-use crate::core::{Metadata, Point, PointCloud, PointXYZ, PointXYZRGB};
+use crate::core::{Metadata, Point, PointCloud, PointXYZ};
 use crate::error::{CloudError, Result};
-use std::fs::File;
-use std::io::{BufRead, BufReader, BufWriter, Write};
+use pcd_rs::{DataKind, DynReader, DynRecord, DynWriter, Field, Schema, ValueKind, WriterInit};
 use std::path::Path;
 
 /// Load a point cloud from a PCD file
@@ -17,85 +18,87 @@ use std::path::Path;
 /// # Returns
 /// A Result containing the loaded PointCloud or an error
 pub fn load_pcd<P: AsRef<Path>>(path: P) -> Result<PointCloud<PointXYZ>> {
-    let file = File::open(path)?;
-    let reader = BufReader::new(file);
+    let reader = DynReader::open(path.as_ref())
+        .map_err(|e| CloudError::format_error(format!("Failed to open PCD file: {}", e)))?;
 
     let mut points = Vec::new();
     let mut metadata = Metadata::default();
-    let mut in_data_section = false;
 
-    for line in reader.lines() {
-        let line = line?;
-        let line = line.trim();
+    // Extract metadata from PCD header
+    let pcd_meta = reader.meta();
+    metadata.width = pcd_meta.width as u32;
+    metadata.height = pcd_meta.height as u32;
+    metadata.is_organized = metadata.height > 1;
 
-        if line.is_empty() || line.starts_with('#') {
-            continue;
-        }
+    // Store additional metadata
+    metadata
+        .custom_fields
+        .insert("version".to_string(), "0.7".to_string());
 
-        if line.starts_with("VERSION") {
-            // Store version in custom fields
-            if let Some(version) = line.split_whitespace().nth(1) {
-                metadata
-                    .custom_fields
-                    .insert("version".to_string(), version.to_string());
-            }
-        } else if line.starts_with("FIELDS") {
-            // Store field information in custom fields
-            let fields: Vec<&str> = line.split_whitespace().skip(1).collect();
-            let fields_str = fields.join(",");
-            metadata
-                .custom_fields
-                .insert("fields".to_string(), fields_str);
-        } else if line.starts_with("SIZE") {
-            // Parse size information
-        } else if line.starts_with("TYPE") {
-            // Parse type information
-        } else if line.starts_with("COUNT") {
-            // Parse count information
-        } else if line.starts_with("WIDTH") {
-            metadata.width = line
-                .split_whitespace()
-                .nth(1)
-                .and_then(|s| s.parse().ok())
-                .unwrap_or(0);
-        } else if line.starts_with("HEIGHT") {
-            metadata.height = line
-                .split_whitespace()
-                .nth(1)
-                .and_then(|s| s.parse().ok())
-                .unwrap_or(1);
-        } else if line.starts_with("VIEWPOINT") {
-            // Parse viewpoint information
-        } else if line.starts_with("POINTS") {
-            let point_count = line
-                .split_whitespace()
-                .nth(1)
-                .and_then(|s| s.parse().ok())
-                .unwrap_or(0);
-            points.reserve(point_count);
-        } else if line.starts_with("DATA") {
-            in_data_section = true;
-        } else if in_data_section {
-            // Parse point data
-            let coords: Vec<&str> = line.split_whitespace().collect();
-            if coords.len() >= 3 {
-                if let (Ok(x), Ok(y), Ok(z)) = (
-                    coords[0].parse::<f32>(),
-                    coords[1].parse::<f32>(),
-                    coords[2].parse::<f32>(),
-                ) {
-                    points.push(PointXYZ::new(x, y, z));
-                }
-            }
-        }
+    // Read point data
+    for record_result in reader {
+        let record = record_result
+            .map_err(|e| CloudError::format_error(format!("Failed to read PCD record: {}", e)))?;
+
+        // Extract x, y, z coordinates from the record
+        let (x, y, z) = extract_xyz_from_record(&record)?;
+        points.push(PointXYZ::new(x, y, z));
     }
 
     // Update metadata with actual point count
     metadata.width = points.len() as u32;
-    metadata.height = 1;
-    metadata.is_organized = false;
+    if metadata.height == 0 {
+        metadata.height = 1;
+    }
 
     Ok(PointCloud::from_points_and_metadata(points, metadata))
+}
+
+/// Extract x, y, z coordinates from a DynRecord
+fn extract_xyz_from_record(record: &DynRecord) -> Result<(f32, f32, f32)> {
+    let fields = &record.0;
+
+    if fields.len() < 3 {
+        return Err(CloudError::format_error(
+            "PCD record must have at least 3 fields (x, y, z)",
+        ));
+    }
+
+    let x = extract_f32_from_field(&fields[0])?;
+    let y = extract_f32_from_field(&fields[1])?;
+    let z = extract_f32_from_field(&fields[2])?;
+
+    Ok((x, y, z))
+}
+
+/// Extract f32 value from a Field
+fn extract_f32_from_field(field: &Field) -> Result<f32> {
+    match field {
+        Field::F32(values) => {
+            if values.is_empty() {
+                Err(CloudError::format_error("Empty F32 field"))
+            } else {
+                Ok(values[0])
+            }
+        }
+        Field::F64(values) => {
+            if values.is_empty() {
+                Err(CloudError::format_error("Empty F64 field"))
+            } else {
+                Ok(values[0] as f32)
+            }
+        }
+        Field::I32(values) => {
+            if values.is_empty() {
+                Err(CloudError::format_error("Empty I32 field"))
+            } else {
+                Ok(values[0] as f32)
+            }
+        }
+        _ => Err(CloudError::format_error(
+            "Unsupported field type for coordinate",
+        )),
+    }
 }
 
 /// Save a point cloud to a PCD file
@@ -107,37 +110,44 @@ pub fn load_pcd<P: AsRef<Path>>(path: P) -> Result<PointCloud<PointXYZ>> {
 /// # Returns
 /// A Result indicating success or failure
 pub fn save_pcd<T: Point, P: AsRef<Path>>(cloud: &PointCloud<T>, path: P) -> Result<()> {
-    let file = File::create(path)?;
-    let mut writer = BufWriter::new(file);
+    // Define the schema for x, y, z coordinates
+    let schema = vec![
+        ("x", ValueKind::F32, 1),
+        ("y", ValueKind::F32, 1),
+        ("z", ValueKind::F32, 1),
+    ];
 
-    // Write header
-    writeln!(writer, "# .PCD v0.7 - Point Cloud Data file format")?;
-    writeln!(writer, "VERSION 0.7")?;
-    writeln!(writer, "FIELDS x y z")?;
-    writeln!(writer, "SIZE 4 4 4")?;
-    writeln!(writer, "TYPE F F F")?;
-    writeln!(writer, "COUNT 1 1 1")?;
-    writeln!(writer, "WIDTH {}", cloud.len())?;
-    writeln!(writer, "HEIGHT 1")?;
-    writeln!(writer, "VIEWPOINT 0 0 0 1 0 0 0")?;
-    writeln!(writer, "POINTS {}", cloud.len())?;
-    writeln!(writer, "DATA ascii")?;
+    // Create writer with ASCII format
+    let mut writer: DynWriter<_> = WriterInit {
+        width: cloud.len() as u64,
+        height: 1,
+        viewpoint: Default::default(),
+        data_kind: DataKind::Ascii,
+        schema: Some(Schema::from_iter(schema)),
+    }
+    .create(path.as_ref())
+    .map_err(|e| CloudError::format_error(format!("Failed to create PCD writer: {}", e)))?;
 
     // Write point data
     for point in cloud.points() {
         let pos = point.position();
-        writeln!(writer, "{} {} {}", pos[0], pos[1], pos[2])?;
+        let record = DynRecord(vec![
+            Field::F32(vec![pos[0]]),
+            Field::F32(vec![pos[1]]),
+            Field::F32(vec![pos[2]]),
+        ]);
+
+        writer
+            .push(&record)
+            .map_err(|e| CloudError::format_error(format!("Failed to write PCD record: {}", e)))?;
     }
 
-    writer.flush()?;
-    Ok(())
-}
+    // Finalize the writer
+    writer
+        .finish()
+        .map_err(|e| CloudError::format_error(format!("Failed to finalize PCD file: {}", e)))?;
 
-#[derive(Debug, Clone, Copy)]
-enum DataFormat {
-    Ascii,
-    Binary,
-    BinaryCompressed,
+    Ok(())
 }
 
 #[cfg(test)]

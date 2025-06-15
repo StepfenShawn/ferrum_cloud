@@ -39,6 +39,11 @@ pub enum CloudError {
     #[error("Serialization error: {0}")]
     SerializationError(#[from] serde_json::Error),
 
+    /// Visualization related errors
+    #[cfg(feature = "visualization")]
+    #[error("Visualization error: {0}")]
+    Visualization(String),
+
     /// Generic error with custom message
     #[error("{0}")]
     Custom(String),
@@ -68,6 +73,12 @@ impl CloudError {
     /// Create a new search error
     pub fn search_error<S: Into<String>>(msg: S) -> Self {
         CloudError::SearchError(msg.into())
+    }
+
+    /// Create a visualization error
+    #[cfg(feature = "visualization")]
+    pub fn visualization_error<S: Into<String>>(msg: S) -> Self {
+        CloudError::Visualization(msg.into())
     }
 
     /// Create a custom error
